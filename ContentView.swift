@@ -5,7 +5,7 @@ import Firebase
 import FirebaseDatabase
 
 struct ContentView: View {
-    // MARK: - Existing Properties
+    // MARK: - Properties
     @StateObject private var locationManager = LocationManager()
     @State private var isRunning = false
     @State private var startTime = Date()
@@ -28,37 +28,32 @@ struct ContentView: View {
     @State private var showComparison = false
     @State private var showComparisonResults = false
     @State private var showHistory = false
-    @State private var showOnboarding = false
     @AppStorage("isDarkMode") private var isDarkMode = false
-    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @State private var selectedSessions: [UUID] = []
     
-    // MARK: - New Properties for Requested Features
+    // Menu and Live Session Properties
     @State private var showMenu = false
-    @State private var bgColor = Color(.systemBackground)
-    @State private var username = UserDefaults.standard.string(forKey: "username") ?? ""
+    @State private var showResetOptions = false
+    @State private var isUploading = false
+    @State private var uploadMessage = ""
+    @State private var showUploadAlert = false
+    @State private var showLiveSessionOptions = false
+    @State private var liveSessionStatus = "Not Active"
     @State private var isLiveSessionActive = false
     @State private var autoStartLiveSession = UserDefaults.standard.bool(forKey: "autoStartLiveSession")
-    @State private var showWebSessions = false
-    @State private var showColorPicker = false
+    @State private var username = UserDefaults.standard.string(forKey: "username") ?? ""
     @State private var showUsernameDialog = false
     @State private var liveSessionRef: DatabaseReference?
-    
-    private let menuItems = [
-        "Analytics", "Map", "GPS On/Off", "Compare",
-        "History", "Web Sessions", "Live Sessions",
-        "Auto Start", "Background Color", "Set Username"
-    ]
+    @State private var liveSessionTimer: Timer?
 
     var body: some View {
         NavigationView {
             ZStack {
-                // Updated background with customizable color
-                bgColor.edgesIgnoringSafeArea(.all)
+                Color(.systemBackground).edgesIgnoringSafeArea(.all)
                 
                 VStack {
-                    // App Name at the Top Center
-                    Text("MX StopWatch GPS")
+                    // Header
+                    Text("Moto StopWatch Lap/Sector")
                         .font(.system(size: 20, weight: .bold))
                         .padding(.top, 10)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -66,7 +61,7 @@ struct ContentView: View {
                         .foregroundColor(.white)
                         .cornerRadius(8)
 
-                    // Total Time
+                    // Time Displays
                     Text(" \(totalTime)")
                         .font(.system(size: 30, weight: .bold))
                         .padding(.vertical, 10)
@@ -74,19 +69,17 @@ struct ContentView: View {
                         .background(Color.gray.opacity(0.2))
                         .cornerRadius(10)
                         .padding(.top, 10)
-
-                    // Current Lap
+                    
                     Text("Current Lap: \(currentLap)")
                         .font(.system(size: 18))
                         .padding(.top, 10)
-
-                    // Best Lap
+                    
                     Text("Best Lap: \(bestLap)")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.red)
                         .padding(.top, 10)
 
-                    // First Row of Buttons (Start/Stop and Reset)
+                    // Control Buttons
                     HStack {
                         Button(action: {
                             if isRunning {
@@ -103,7 +96,7 @@ struct ContentView: View {
                         }
 
                         Button(action: {
-                            saveSession()
+                            showResetOptions = true
                         }) {
                             Text("Reset")
                                 .frame(width: 114, height: 40)
@@ -111,14 +104,26 @@ struct ContentView: View {
                                 .foregroundColor(.white)
                                 .cornerRadius(8)
                         }
+                        .actionSheet(isPresented: $showResetOptions) {
+                            ActionSheet(
+                                title: Text("Reset Options"),
+                                message: Text("Save your session before resetting?"),
+                                buttons: [
+                                    .default(Text("Save and Reset"), action: {
+                                        saveAndUploadSession()
+                                    }),
+                                    .destructive(Text("Just Reset"), action: {
+                                        resetStopwatch()
+                                    }),
+                                    .cancel()
+                                ]
+                            )
+                        }
                     }
                     .padding(.top, 10)
 
-                    // Second Row of Buttons (Lap and Sector)
                     HStack {
-                        Button(action: {
-                            addLap()
-                        }) {
+                        Button(action: addLap) {
                             Text("Lap")
                                 .frame(maxWidth: .infinity, minHeight: 40)
                                 .background(Color.orange)
@@ -126,9 +131,7 @@ struct ContentView: View {
                                 .cornerRadius(8)
                         }
 
-                        Button(action: {
-                            addSector()
-                        }) {
+                        Button(action: addSector) {
                             Text("Sector")
                                 .frame(maxWidth: .infinity, minHeight: 40)
                                 .background(Color.purple)
@@ -138,18 +141,16 @@ struct ContentView: View {
                     }
                     .padding(.top, 10)
 
-                    // Scrollable List for Sectors and Laps
+                    // Lap/Sector List
                     ZStack(alignment: .bottomTrailing) {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 8) {
-                                // Display sectors for the current lap (if any)
                                 if !sectorTimes.isEmpty && !sectorTimes[0].isEmpty {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text("Current Lap Sectors")
                                             .font(.system(size: 16, weight: .bold))
                                             .padding(.vertical, 4)
 
-                                        // Display sectors in reverse order (most recent first)
                                         ForEach(sectorTimes[0], id: \.self) { sectorTime in
                                             Text(sectorTime)
                                                 .font(.system(size: 14))
@@ -159,15 +160,12 @@ struct ContentView: View {
                                     }
                                 }
 
-                                // Display completed laps and their sectors
                                 ForEach(lapTimes.indices, id: \.self) { index in
                                     VStack(alignment: .leading, spacing: 4) {
-                                        // Lap time
                                         Text(lapTimes[index])
                                             .font(.system(size: 16, weight: .bold))
                                             .padding(.vertical, 4)
 
-                                        // Sector times for this lap (in reverse order)
                                         if sectorTimes.count > index + 1 {
                                             ForEach(sectorTimes[index + 1], id: \.self) { sectorTime in
                                                 Text(sectorTime)
@@ -179,158 +177,116 @@ struct ContentView: View {
                                     }
                                 }
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.bottom, 16)
                         }
-                        .frame(maxHeight: .infinity)
 
-                        // Bottom-right corner buttons (now includes FAB for new menu)
-                        VStack(alignment: .trailing, spacing: 8) {
-                            // Floating Action Button for new menu
-                            Button(action: { showMenu.toggle() }) {
-                                Image(systemName: "plus")
-                                    .font(.title)
-                                    .foregroundColor(.white)
-                                    .padding()
-                                    .background(Circle().fill(Color.blue))
-                            }
-                            
-                            // Existing buttons (kept in same position)
-                            Button(action: {
-                                showAnalytics = true
-                            }) {
-                                Text("Analytics")
-                                    .frame(width: 80, height: 30)
-                                    .background(Color.green)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-                            .sheet(isPresented: $showAnalytics) {
-                                LocationAnalyticsView(sessions: $sessions, saveSessions: saveSessions)
-                            }
-
-                            NavigationLink(destination: MapScreen(
-                                mapRegion: $mapRegion,
-                                sectorMarkers: $sectorMarkers,
-                                onMarkStartFinish: { addLap() },
-                                onMarkSector: { addSector() }
-                            )) {
-                                Text("Map")
-                                    .frame(width: 80, height: 30)
-                                    .background(Color.blue)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-
-                            Button(action: {
-                                locationManager.toggleGPS()
-                            }) {
-                                Text(locationManager.isGPSEnabled ? "GPS Off" : "GPS On")
-                                    .frame(width: 80, height: 30)
-                                    .background(locationManager.isGPSEnabled ? Color.green : Color.red)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-
-                            Button(action: {
-                                showComparison = true
-                            }) {
-                                Text("Compare")
-                                    .frame(width: 80, height: 30)
-                                    .background(Color.blue)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-                            .sheet(isPresented: $showComparison) {
-                                SessionSelectionView(sessions: $sessions, selectedSessions: $selectedSessions)
-                            }
-                            .onChange(of: selectedSessions) { newValue in
-                                if !newValue.isEmpty {
-                                    showComparisonResults = true
-                                }
-                            }
-                            .sheet(isPresented: $showComparisonResults) {
-                                CompareView(sessions: $sessions, selectedSessions: $selectedSessions)
-                            }
-
-                            Button(action: {
-                                showHistory = true
-                            }) {
-                                Text("History")
-                                    .frame(width: 80, height: 30)
-                                    .background(Color.blue)
-                                    .foregroundColor(.white)
-                                    .cornerRadius(8)
-                            }
-                            .sheet(isPresented: $showHistory) {
-                                HistoryView(sessions: $sessions)
-                            }
+                        // Menu Button
+                        Button(action: { showMenu.toggle() }) {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.title)
+                                .foregroundColor(.white)
+                                .padding()
+                                .background(Circle().fill(Color.blue))
                         }
                         .padding(.bottom, 16)
                         .padding(.trailing, 16)
                     }
                 }
                 .padding()
+                
+                if isUploading {
+                    ProgressView("Uploading session...")
+                        .padding()
+                        .background(Color.gray.opacity(0.8))
+                        .cornerRadius(10)
+                }
             }
             .navigationBarHidden(true)
-            // New action sheet for menu
             .actionSheet(isPresented: $showMenu) {
-                ActionSheet(title: Text("Menu"), buttons: menuActionButtons)
+                ActionSheet(
+                    title: Text("Menu"),
+                    buttons: [
+                        .default(Text("Analytics"), action: { showAnalytics = true }),
+                        .default(Text("Map"), action: {}),
+                        .default(Text(locationManager.isGPSEnabled ? "GPS Off" : "GPS On"),
+                                 action: { locationManager.toggleGPS() }),
+                        .default(Text("Compare"), action: { showComparison = true }),
+                        .default(Text("History"), action: { showHistory = true }),
+                        .default(Text("Web Sessions"), action: {
+                            if let url = URL(string: "https://moto.webhop.me/") {
+                                UIApplication.shared.open(url)
+                            }
+                        }),
+                        .default(Text("Set Username"), action: {
+                            showUsernameDialog = true
+                        }),
+                        .default(Text("Live Session"), action: {
+                            showLiveSessionOptions = true
+                        }),
+                        .cancel()
+                    ]
+                )
             }
-            // New alerts and sheets
+            .actionSheet(isPresented: $showLiveSessionOptions) {
+                ActionSheet(
+                    title: Text("Live Session"),
+                    message: Text("Status: \(liveSessionStatus)"),
+                    buttons: [
+                        .default(Text(isLiveSessionActive ? "Stop Live Session" : "Start Live Session"), action: {
+                            toggleLiveSession()
+                        }),
+                        .default(Text("Auto Start: \(autoStartLiveSession ? "ON" : "OFF")"), action: {
+                            toggleAutoStart()
+                        }),
+                        .cancel()
+                    ]
+                )
+            }
             .alert("Set Username", isPresented: $showUsernameDialog, actions: {
                 TextField("Username", text: $username)
                 Button("Save", action: saveUsername)
                 Button("Cancel", role: .cancel) {}
             })
-            .sheet(isPresented: $showWebSessions) {
-                WebSessionsView()
+            .alert("Upload Status", isPresented: $showUploadAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(uploadMessage)
+            }
+            .sheet(isPresented: $showAnalytics) {
+                LocationAnalyticsView(sessions: $sessions, saveSessions: saveSessions)
+            }
+            .sheet(isPresented: $showComparison) {
+                SessionSelectionView(sessions: $sessions, selectedSessions: $selectedSessions)
+            }
+            .sheet(isPresented: $showComparisonResults) {
+                CompareView(sessions: $sessions, selectedSessions: $selectedSessions)
+            }
+            .sheet(isPresented: $showHistory) {
+                HistoryView(sessions: $sessions)
             }
         }
         .preferredColorScheme(isDarkMode ? .dark : .light)
         .onAppear {
-            loadSavedSettings()
-            checkAutoStart()
-            // Initialize Firebase if not already done
             if FirebaseApp.app() == nil {
                 FirebaseApp.configure()
             }
+            checkAutoStart()
+        }
+        .onDisappear {
+            if isLiveSessionActive {
+                stopLiveSession()
+            }
         }
     }
-    
-    // MARK: - New Methods for Added Features
-    
-    private var menuActionButtons: [ActionSheet.Button] {
-        menuItems.map { item in
-            .default(Text(item), action: { handleMenuSelection(item) })
-        } + [.cancel()]
-    }
-    
-    private func handleMenuSelection(_ item: String) {
-        switch item {
-        case "GPS On/Off":
-            locationManager.toggleGPS()
-        case "Web Sessions":
-            showWebSessions = true
-        case "Live Sessions":
-            toggleLiveSession()
-        case "Auto Start":
-            toggleAutoStart()
-        case "Background Color":
-            showColorPickerAlert()
-        case "Set Username":
-            showUsernameDialog = true
-        default:
-            // These items already have dedicated buttons
-            break
-        }
-    }
-    
+
+    // MARK: - Live Session Methods
     private func toggleLiveSession() {
         if isLiveSessionActive {
             stopLiveSession()
+            liveSessionStatus = "Not Active"
         } else {
             startLiveSession()
+            liveSessionStatus = "Active"
         }
     }
     
@@ -347,16 +303,42 @@ struct ContentView: View {
             "username": username,
             "device": "iOS",
             "current_lap": currentLap,
-            "best_lap": bestLap
+            "best_lap": bestLap,
+            "location": [
+                "latitude": locationManager.userLocation?.coordinate.latitude ?? 0,
+                "longitude": locationManager.userLocation?.coordinate.longitude ?? 0
+            ]
         ]
         
         liveSessionRef = db.child("live_sessions").child(username)
         liveSessionRef?.setValue(sessionData)
         isLiveSessionActive = true
+        
+        // Update every 5 seconds
+        liveSessionTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+            updateLiveSession()
+        }
+    }
+    
+    private func updateLiveSession() {
+        guard isLiveSessionActive, let ref = liveSessionRef else { return }
+        
+        let updateData: [String: Any] = [
+            "current_lap": currentLap,
+            "best_lap": bestLap,
+            "last_update": ServerValue.timestamp(),
+            "location": [
+                "latitude": locationManager.userLocation?.coordinate.latitude ?? 0,
+                "longitude": locationManager.userLocation?.coordinate.longitude ?? 0
+            ]
+        ]
+        
+        ref.updateChildValues(updateData)
     }
     
     private func stopLiveSession() {
         guard let ref = liveSessionRef else { return }
+        
         let endData: [String: Any] = [
             "status": "inactive",
             "end_time": ServerValue.timestamp()
@@ -365,12 +347,13 @@ struct ContentView: View {
         ref.updateChildValues(endData)
         isLiveSessionActive = false
         liveSessionRef = nil
+        liveSessionTimer?.invalidate()
     }
     
     private func toggleAutoStart() {
         autoStartLiveSession.toggle()
         UserDefaults.standard.set(autoStartLiveSession, forKey: "autoStartLiveSession")
-        showAlert(title: "Auto Start", message: autoStartLiveSession ? "Enabled" : "Disabled")
+        showAlert(title: "Auto Start", message: autoStartLiveSession ? "Enabled - Will auto-start when app opens" : "Disabled")
     }
     
     private func checkAutoStart() {
@@ -379,74 +362,22 @@ struct ContentView: View {
         }
     }
     
-    private func showColorPickerAlert() {
-        let alert = UIAlertController(
-            title: "Background Color",
-            message: "Choose a color",
-            preferredStyle: .actionSheet
-        )
-        
-        let colors: [(String, UIColor)] = [
-            ("Default", .systemBackground),
-            ("Blue", .systemBlue),
-            ("Red", .systemRed),
-            ("Green", .systemGreen),
-            ("Yellow", .systemYellow),
-            ("Dark", .darkGray)
-        ]
-        
-        for (name, color) in colors {
-            alert.addAction(UIAlertAction(title: name, style: .default, handler: { _ in
-                self.bgColor = Color(color)
-                UserDefaults.standard.set(color.hexString, forKey: "bgColor")
-            }))
-        }
-
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        
-        // Present the alert
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let rootViewController = windowScene.windows.first?.rootViewController {
-            rootViewController.present(alert, animated: true)
-        }
-    }
-    
     private func saveUsername() {
-        UserDefaults.standard.set(username, forKey: "username")
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUsername.isEmpty else {
+            showAlert(title: "Error", message: "Username cannot be empty")
+            return
+        }
+        
+        UserDefaults.standard.set(trimmedUsername, forKey: "username")
+        username = trimmedUsername
+        
         if isLiveSessionActive {
-            liveSessionRef?.updateChildValues(["username": username])
-        }
-    }
-    
-    private func loadSavedSettings() {
-        // Load background color
-        if let colorHex = UserDefaults.standard.string(forKey: "bgColor"),
-           let color = UIColor(hex: colorHex) {
-            bgColor = Color(color)
-        }
-        
-        // Load username
-        if let savedUsername = UserDefaults.standard.string(forKey: "username") {
-            username = savedUsername
-        }
-        
-        // Load auto-start setting
-        autoStartLiveSession = UserDefaults.standard.bool(forKey: "autoStartLiveSession")
-    }
-    
-    private func showAlert(title: String, message: String) {
-        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let rootViewController = windowScene.windows.first?.rootViewController {
-            rootViewController.present(alert, animated: true)
+            liveSessionRef?.updateChildValues(["username": trimmedUsername])
         }
     }
     
     // MARK: - Stopwatch Methods
-    
     private func startStopwatch() {
         if !isRunning {
             isRunning = true
@@ -486,6 +417,10 @@ struct ContentView: View {
         let lapTime = Date().timeIntervalSince(lapStartTime)
         totalTime = formatTime(currentTime)
         currentLap = formatTime(lapTime)
+        
+        if isLiveSessionActive {
+            updateLiveSession()
+        }
     }
     
     private func addLap() {
@@ -497,19 +432,15 @@ struct ContentView: View {
             }
             lapCount += 1
             lapTimes.insert("Lap \(lapCount): \(formatTime(lapTime))", at: 0)
-            
-            // Add a new empty array for the new lap's sectors
             sectorTimes.insert([], at: 0)
-            
             lapStartTime = Date()
             sectorStartTime = Date()
-            sectorCount = 0 // Reset sector count for the new lap
+            sectorCount = 0
         }
     }
     
     private func addSector() {
         if isRunning {
-            // Ensure sectorTimes has an array for the current lap
             if sectorTimes.isEmpty {
                 sectorTimes.append([])
             }
@@ -528,8 +459,91 @@ struct ContentView: View {
         let milliseconds = Int((time.truncatingRemainder(dividingBy: 1)) * 100)
         return String(format: "%02d:%02d:%02d", minutes, seconds, milliseconds)
     }
-    
+
+
     // MARK: - Session Management
+    private func saveAndUploadSession() {
+        guard !lapTimes.isEmpty else {
+            uploadMessage = "No session data to save"
+            showUploadAlert = true
+            return
+        }
+        
+        isUploading = true
+        
+        // First save locally
+        saveSession()
+        
+        // Then upload to Flask server
+        uploadToFlaskServer { success, message in
+            DispatchQueue.main.async {
+                isUploading = false
+                uploadMessage = message
+                showUploadAlert = true
+                
+                if success {
+                    resetStopwatch()
+                }
+            }
+        }
+    }
+    
+    private func uploadToFlaskServer(completion: @escaping (Bool, String) -> Void) {
+        let sessionData: [String: Any] = [
+            "session": [
+                "date": Date().timeIntervalSince1970,
+                "fastest_lap": bestLap,
+                "slowest_lap": lapTimes.map { $0.components(separatedBy: ": ").last ?? "00:00:00" }.max() ?? "00:00:00",
+                "average_lap": calculateAverageLap(),
+                "consistency": calculateConsistency(),
+                "total_time": totalTime,
+                "username": username.isEmpty ? "iOS User" : username,
+                "device_type": "iOS"
+            ],
+            "laps": lapTimes.enumerated().map { index, lap in
+                let time = lap.components(separatedBy: ": ").last ?? "00:00:00"
+                let sectors = sectorTimes.count > index ? sectorTimes[index] : []
+                return [
+                    "lap_number": index + 1,
+                    "lap_time": time,
+                    "sectors": sectors
+                ]
+            }
+        ]
+        
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: sessionData) else {
+            completion(false, "Failed to encode session data")
+            return
+        }
+        
+        guard let url = URL(string: "https://moto.webhop.me/upload") else {
+            completion(false, "Invalid server URL")
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = jsonData
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                completion(false, "Upload failed: \(error.localizedDescription)")
+                return
+            }
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                completion(false, "Invalid server response")
+                return
+            }
+            
+            if httpResponse.statusCode == 200 {
+                completion(true, "Session uploaded successfully!")
+            } else {
+                completion(false, "Server error: \(httpResponse.statusCode)")
+            }
+        }.resume()
+    }
     
     private func saveSession() {
         guard !lapTimes.isEmpty else { return }
@@ -538,9 +552,7 @@ struct ContentView: View {
         let slowestLap = lapTimes.map { $0.components(separatedBy: ": ").last ?? "00:00:00" }.max() ?? "00:00:00"
         let averageLap = calculateAverageLap()
         let consistency = calculateConsistency()
-        
         let currentTotalTime = totalTime
-        
         let location = locationManager.userLocation?.coordinate
         
         if let location = location {
@@ -563,9 +575,8 @@ struct ContentView: View {
                     totalTime: currentTotalTime
                 )
                 
-                sessions.append(session)
-                saveSessions(sessions)
-                resetStopwatch()
+                self.sessions.append(session)
+                self.saveSessions(self.sessions)
             }
         } else {
             let session = LocationSession(
@@ -581,9 +592,8 @@ struct ContentView: View {
                 totalTime: currentTotalTime
             )
             
-            sessions.append(session)
-            saveSessions(sessions)
-            resetStopwatch()
+            self.sessions.append(session)
+            self.saveSessions(self.sessions)
         }
     }
     
@@ -628,8 +638,6 @@ struct ContentView: View {
         return String(format: "%.0f%%", clampedConsistency)
     }
     
-    // MARK: - Persistence
-    
     private func saveSessions(_ sessions: [LocationSession]) {
         if let encoded = try? JSONEncoder().encode(sessions) {
             UserDefaults.standard.set(encoded, forKey: "savedSessions")
@@ -643,52 +651,15 @@ struct ContentView: View {
         }
         return []
     }
-}
-
-// MARK: - Extensions for Color Handling
-extension UIColor {
-    convenience init?(hex: String) {
-        var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
-        hexSanitized = hexSanitized.replacingOccurrences(of: "#", with: "")
-        
-        var rgb: UInt64 = 0
-        
-        var r: CGFloat = 0.0
-        var g: CGFloat = 0.0
-        var b: CGFloat = 0.0
-        var a: CGFloat = 1.0
-        
-        let length = hexSanitized.count
-        
-        guard Scanner(string: hexSanitized).scanHexInt64(&rgb) else { return nil }
-        
-        if length == 6 {
-            r = CGFloat((rgb & 0xFF0000) >> 16) / 255.0
-            g = CGFloat((rgb & 0x00FF00) >> 8) / 255.0
-            b = CGFloat(rgb & 0x0000FF) / 255.0
-        } else if length == 8 {
-            r = CGFloat((rgb & 0xFF000000) >> 24) / 255.0
-            g = CGFloat((rgb & 0x00FF0000) >> 16) / 255.0
-            b = CGFloat((rgb & 0x0000FF00) >> 8) / 255.0
-            a = CGFloat(rgb & 0x000000FF) / 255.0
-        } else {
-            return nil
-        }
-        
-        self.init(red: r, green: g, blue: b, alpha: a)
-    }
     
-    var hexString: String {
-        var r: CGFloat = 0
-        var g: CGFloat = 0
-        var b: CGFloat = 0
-        var a: CGFloat = 0
+    private func showAlert(title: String, message: String) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
         
-        getRed(&r, green: &g, blue: &b, alpha: &a)
-        
-        let rgb: Int = (Int)(r*255)<<16 | (Int)(g*255)<<8 | (Int)(b*255)<<0
-        
-        return String(format: "#%06x", rgb)
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootViewController = windowScene.windows.first?.rootViewController {
+            rootViewController.present(alert, animated: true)
+        }
     }
 }
 
